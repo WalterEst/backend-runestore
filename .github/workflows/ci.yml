@@ -1,0 +1,74 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'RunarStore.sql'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'RunarStore.sql'
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root_ci_password
+          MYSQL_DATABASE: tienda_anime
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Cargar esquema (RunarStore.sql) y crear usuario de aplicación
+        run: |
+          mysql -h127.0.0.1 -uroot -proot_ci_password < ../RunarStore.sql
+          mysql -h127.0.0.1 -uroot -proot_ci_password -e "
+            CREATE USER IF NOT EXISTS 'tienda_anime_app'@'%' IDENTIFIED BY 'ci_app_password';
+            GRANT SELECT, INSERT, UPDATE, DELETE ON tienda_anime.* TO 'tienda_anime_app'@'%';
+            FLUSH PRIVILEGES;"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test unitario
+        run: npm test
+
+      - name: Test e2e
+        run: npm run test:e2e
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: tienda_anime
+          DB_USER: tienda_anime_app
+          DB_PASSWORD: ci_app_password
+          JWT_SECRET: ci_only_secret_never_use_in_prod
+          JWT_REFRESH_SECRET: ci_only_refresh_secret_never_use_in_prod
+          FRONTEND_ORIGIN: http://localhost:4200
