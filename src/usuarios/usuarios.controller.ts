@@ -15,6 +15,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { JwtAuthOpcionalGuard } from '../auth/guards/jwt-auth-opcional.guard';
 import { UsuarioActual } from '../auth/decorators/usuario-actual.decorator';
 import type { JwtPayload } from '../auth/types';
+import { R2Service } from '../common/r2/r2.service';
+import { PresignedUrlDto } from '../catalogo/dto/presigned-url.dto';
+import { ActualizarAvatarDto } from './dto/avatar.dto';
 import { ActualizarDireccionDto, CrearDireccionDto } from './dto/direccion.dto';
 import { ActualizarPerfilDto } from './dto/perfil.dto';
 import { CrearSolicitudDerechoDto } from './dto/solicitud-derecho.dto';
@@ -26,6 +29,7 @@ export class UsuariosController {
   constructor(
     private readonly usuariosService: UsuariosService,
     private readonly solicitudesService: SolicitudesDerechoService,
+    private readonly r2Service: R2Service,
   ) {}
 
   @Get('perfil')
@@ -41,6 +45,21 @@ export class UsuariosController {
     @Body() dto: ActualizarPerfilDto,
   ) {
     return this.usuariosService.actualizarPerfil(usuario.sub, dto);
+  }
+
+  @Post('perfil/foto/presigned-url')
+  @UseGuards(JwtAuthGuard)
+  generarPresignedUrlAvatar(@Body() dto: PresignedUrlDto) {
+    return this.r2Service.generarUrlSubida(dto.mimeType, 'avatares');
+  }
+
+  @Patch('perfil/foto')
+  @UseGuards(JwtAuthGuard)
+  actualizarAvatar(
+    @UsuarioActual() usuario: JwtPayload,
+    @Body() dto: ActualizarAvatarDto,
+  ) {
+    return this.usuariosService.actualizarAvatar(usuario.sub, dto.url);
   }
 
   @Get('direcciones')

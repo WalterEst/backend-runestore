@@ -50,7 +50,7 @@ export class R2Service {
 
   async generarUrlSubida(
     mimeType: string,
-    prefijo: 'productos' | 'tickets',
+    prefijo: 'productos' | 'tickets' | 'avatares',
   ): Promise<PresignedUrlResultado> {
     const extension = MIME_PERMITIDOS[mimeType];
     if (!extension) {

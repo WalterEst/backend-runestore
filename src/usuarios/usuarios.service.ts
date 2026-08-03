@@ -63,6 +63,11 @@ export class UsuariosService {
     return this.obtenerPerfil(usuarioId);
   }
 
+  async actualizarAvatar(usuarioId: number, url: string) {
+    await this.usuarios.update({ id: usuarioId }, { avatarUrl: url });
+    return this.obtenerPerfil(usuarioId);
+  }
+
   async listarDirecciones(usuarioId: number): Promise<Direccion[]> {
     return this.direcciones.find({
       where: { usuarioId },
@@ -177,6 +182,7 @@ export class UsuariosService {
           apellido: 'Suprimido',
           rut: null,
           telefono: null,
+          avatarUrl: null,
           passwordHash: 'SUPRIMIDO',
           refreshTokenHash: null,
           totpSecret: null,

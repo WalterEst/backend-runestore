@@ -42,6 +42,9 @@ export class Usuario {
   @Column({ type: 'varchar', length: 20, nullable: true })
   telefono: string | null;
 
+  @Column({ name: 'avatar_url', type: 'varchar', length: 500, nullable: true })
+  avatarUrl: string | null;
+
   @Column({
     name: 'email_verificado',
     type: 'tinyint',

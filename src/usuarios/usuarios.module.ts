@@ -11,6 +11,7 @@ import { Rol } from '../database/entities/rol.entity';
 import { SolicitudDerecho } from '../database/entities/solicitud-derecho.entity';
 import { Ticket } from '../database/entities/ticket.entity';
 import { Usuario } from '../database/entities/usuario.entity';
+import { R2Service } from '../common/r2/r2.service';
 import { UsuariosAdminController } from './admin/usuarios-admin.controller';
 import { SolicitudesDerechoService } from './solicitudes-derecho.service';
 import { UsuariosController } from './usuarios.controller';
@@ -33,6 +34,6 @@ import { UsuariosService } from './usuarios.service';
     ]),
   ],
   controllers: [UsuariosController, UsuariosAdminController],
-  providers: [UsuariosService, SolicitudesDerechoService],
+  providers: [UsuariosService, SolicitudesDerechoService, R2Service],
 })
 export class UsuariosModule {}
