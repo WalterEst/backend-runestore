@@ -52,7 +52,9 @@ export class CatalogoAdminController {
     private readonly r2Service: R2Service,
   ) {}
 
+  /** Listado base de Productos (vitrina) e Inventario (stock) — bodeguero necesita leerlo para Inventario */
   @Get('productos')
+  @Roles('admin', 'bodeguero')
   listarProductos(@Query() query: QueryInventarioDto) {
     return this.productosService.listarAdmin(query);
   }
@@ -177,7 +179,9 @@ export class CatalogoAdminController {
     await this.productosService.eliminarImagen(imagenId);
   }
 
+  /** Bodeguero necesita el listado para elegir talla al crear una variante — ver Inventario */
   @Get('tallas')
+  @Roles('admin', 'bodeguero')
   listarTallas() {
     return this.productosService.listarTallas();
   }
@@ -193,7 +197,9 @@ export class CatalogoAdminController {
     return this.productosService.listarTodasLasVariantes();
   }
 
+  /** Bodeguero necesita el listado para el filtro por categoría — ver Inventario */
   @Get('categorias')
+  @Roles('admin', 'bodeguero')
   listarCategorias() {
     return this.categoriasService.listarAdmin();
   }

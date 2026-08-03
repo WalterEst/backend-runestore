@@ -54,12 +54,15 @@ export class UsuariosAdminController {
     return this.usuariosService.toggleActivo(id, usuario.sub, req.ip);
   }
 
+  /** Excepción al "solo admin" de la clase: soporte también atiende solicitudes de derechos (Parte 5.1) */
   @Get('solicitudes-derechos')
+  @Roles('admin', 'soporte')
   listarSolicitudes() {
     return this.solicitudesService.listarAdmin();
   }
 
   @Post('solicitudes-derechos/:id/resolver')
+  @Roles('admin', 'soporte')
   resolverSolicitud(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ResolverSolicitudDto,
