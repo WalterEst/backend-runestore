@@ -106,7 +106,14 @@ export class CarritoService {
       where: { id: dto.varianteId, activa: true },
       relations: { producto: true },
     });
-    if (!variante || !variante.producto.activo) {
+    // Los insumos (tipoProducto=blanco) no tienen precio: nunca se venden, aunque alguien
+    // adivine el id de una de sus variantes.
+    if (
+      !variante ||
+      !variante.producto.activo ||
+      variante.producto.tipoProducto !== 'estampado' ||
+      variante.producto.precio === null
+    ) {
       throw new NotFoundException('Variante no encontrada');
     }
 

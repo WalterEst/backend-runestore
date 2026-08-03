@@ -1,7 +1,5 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayNotEmpty,
-  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -31,14 +29,24 @@ export class CrearProductoDto {
   @MaxLength(100)
   anime?: string;
 
+  /** "blanco" = polera base sin estampar (bodega interna, nunca visible en la tienda pública) */
+  @IsIn(['blanco', 'estampado'])
+  tipoProducto: 'blanco' | 'estampado';
+
+  @IsInt()
+  categoriaId: number;
+
+  /** Requerido solo si tipoProducto=estampado — validado en el servicio, no acá */
+  @IsOptional()
   @IsInt()
   @IsPositive()
-  precio: number;
+  precio?: number;
 
-  @IsArray()
-  @ArrayNotEmpty()
-  @IsInt({ each: true })
-  categoriaIds: number[];
+  /** Requerido solo si tipoProducto=blanco — validado en el servicio, no acá */
+  @IsOptional()
+  @IsInt()
+  @IsPositive()
+  costo?: number;
 
   @IsOptional()
   @IsBoolean()
@@ -65,10 +73,12 @@ export class ActualizarProductoDto {
   @MaxLength(100)
   anime?: string;
 
+  // tipoProducto NO se edita: insumo y producto terminado son flujos separados
+  // (2 inventarios); cambiar de tipo implicaría perder precio/costo con sentido.
+
   @IsOptional()
-  @IsArray()
-  @IsInt({ each: true })
-  categoriaIds?: number[];
+  @IsInt()
+  categoriaId?: number;
 
   @IsOptional()
   @IsBoolean()
@@ -93,6 +103,13 @@ export class ActualizarPrecioDto {
   @IsString()
   @MaxLength(150)
   motivo: string;
+}
+
+/** Cambio de costo de un insumo (tipoProducto=blanco) — sin historial, no fiscaliza SERNAC como el precio */
+export class ActualizarCostoDto {
+  @IsInt()
+  @IsPositive()
+  costo: number;
 }
 
 export class CrearVarianteDto {
@@ -158,6 +175,17 @@ export class AjustarStockDto {
   referencia?: string;
 }
 
+export class CrearTallaDto {
+  @IsString()
+  @MaxLength(10)
+  codigo: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  orden?: number;
+}
+
 export class RegistrarImagenDto {
   @IsString()
   @MaxLength(500)
@@ -205,6 +233,39 @@ export class QueryCatalogoDto {
   @Type(() => Number)
   @IsNumber()
   precioMax?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pagina?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limite?: number;
+}
+
+/** Filtros del listado de inventario en el admin — a diferencia de QueryCatalogoDto, sí incluye tipoProducto (blanco/estampado) */
+export class QueryInventarioDto {
+  @IsOptional()
+  @IsString()
+  q?: string;
+
+  @IsOptional()
+  @IsIn(['blanco', 'estampado'])
+  tipoProducto?: 'blanco' | 'estampado';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  categoriaId?: number;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  stockBajo?: boolean;
 
   @IsOptional()
   @Type(() => Number)

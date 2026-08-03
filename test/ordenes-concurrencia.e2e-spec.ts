@@ -83,8 +83,9 @@ describe('Checkout — concurrencia de stock (e2e)', () => {
         slug: `producto-concurrencia-${sufijo}`,
         descripcion:
           'Producto usado solo por el test e2e de concurrencia de stock',
+        tipoProducto: 'estampado',
         precio: 10000,
-        categorias: [categoria],
+        categoriaId: categoria.id,
       }),
     );
 

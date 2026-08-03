@@ -100,7 +100,13 @@ export class OrdenesService {
         const talla = await manager.findOne(Talla, {
           where: { id: variante.tallaId },
         });
-        if (!producto || !talla) {
+        // Los insumos (tipoProducto=blanco) no tienen precio: nunca se venden.
+        if (
+          !producto ||
+          !talla ||
+          producto.tipoProducto !== 'estampado' ||
+          producto.precio === null
+        ) {
           throw new BadRequestException('Producto o talla no encontrados');
         }
 

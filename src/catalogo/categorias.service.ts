@@ -28,7 +28,10 @@ export class CategoriasService {
 
   async crear(dto: CrearCategoriaDto): Promise<Categoria> {
     await this.verificarSlugLibre(dto.slug);
-    return this.categorias.save(this.categorias.create(dto));
+    // activa se fija explícito: el transformer de la columna convierte "undefined" (el DTO
+    // no trae este campo) en 0/false al insertar, así que confiar en el DEFAULT 1 de la
+    // tabla no basta — sin esto, toda categoría nueva nace oculta en la tienda pública.
+    return this.categorias.save(this.categorias.create({ ...dto, activa: true }));
   }
 
   async actualizar(

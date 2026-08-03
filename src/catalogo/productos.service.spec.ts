@@ -76,13 +76,14 @@ describe('ProductosService', () => {
   describe('crear', () => {
     it('genera el slug automáticamente a partir del nombre', async () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
-      categoriasRepo.find.mockResolvedValueOnce([{ id: 1 }, { id: 2 }]);
+      categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
 
       await service.crear({
         nombre: 'Polera Naruto',
         descripcion: 'Estampado DTF',
+        tipoProducto: 'estampado',
         precio: 19990,
-        categoriaIds: [1, 2],
+        categoriaId: 1,
       });
 
       expect(productosRepo.save).toHaveBeenCalledWith(
@@ -94,13 +95,14 @@ describe('ProductosService', () => {
       productosRepo.findOne
         .mockResolvedValueOnce({ id: 9, slug: 'polera-naruto' }) // "polera-naruto" ocupado
         .mockResolvedValueOnce(null); // "polera-naruto-2" libre
-      categoriasRepo.find.mockResolvedValueOnce([{ id: 1 }]);
+      categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
 
       await service.crear({
         nombre: 'Polera Naruto',
         descripcion: 'x',
+        tipoProducto: 'estampado',
         precio: 1000,
-        categoriaIds: [1],
+        categoriaId: 1,
       });
 
       expect(productosRepo.save).toHaveBeenCalledWith(
@@ -108,16 +110,43 @@ describe('ProductosService', () => {
       );
     });
 
-    it('rechaza si alguna categoría no existe', async () => {
+    it('rechaza si la categoría no existe', async () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
-      categoriasRepo.find.mockResolvedValueOnce([{ id: 1 }]); // pidió [1,2], solo existe 1
+      categoriasRepo.findOne.mockResolvedValueOnce(null);
       await expect(
         service.crear({
           nombre: 'x',
           descripcion: 'x',
+          tipoProducto: 'estampado',
           precio: 1000,
-          categoriaIds: [1, 2],
+          categoriaId: 99,
         }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza un producto estampado sin precio', async () => {
+      productosRepo.findOne.mockResolvedValueOnce(null);
+      categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
+      await expect(
+        service.crear({
+          nombre: 'x',
+          descripcion: 'x',
+          tipoProducto: 'estampado',
+          categoriaId: 1,
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza un insumo (blanco) sin costo', async () => {
+      productosRepo.findOne.mockResolvedValueOnce(null);
+      categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
+      await expect(
+        service.crear({
+          nombre: 'x',
+          descripcion: 'x',
+          tipoProducto: 'blanco',
+          categoriaId: 1,
+        } as any),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -305,6 +334,70 @@ describe('ProductosService', () => {
       await expect(
         service.ajustarStock(999, { cantidad: 1, tipo: 'entrada' }, 1),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('listadoPublico', () => {
+    function crearQbMock() {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      return qb;
+    }
+
+    it('siempre excluye los productos "blanco" (insumo interno, nunca visible en la tienda)', async () => {
+      const qb = crearQbMock();
+      productosRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.listadoPublico({});
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        "producto.tipoProducto = 'estampado'",
+      );
+    });
+  });
+
+  describe('listarAdmin', () => {
+    function crearQbMock() {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      return qb;
+    }
+
+    it('sí incluye "blanco" cuando se filtra explícitamente por ese tipo', async () => {
+      const qb = crearQbMock();
+      productosRepo.createQueryBuilder.mockReturnValue(qb);
+
+      const resultado = await service.listarAdmin({ tipoProducto: 'blanco' });
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'producto.tipoProducto = :tipoProducto',
+        { tipoProducto: 'blanco' },
+      );
+      expect(resultado).toEqual({ items: [], total: 0, pagina: 1, limite: 24 });
+    });
+
+    it('filtra por stock bajo cuando se indica', async () => {
+      const qb = crearQbMock();
+      productosRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.listarAdmin({ stockBajo: true });
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('pv.stock <= pv.stock_minimo'),
+      );
     });
   });
 });

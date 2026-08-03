@@ -1,13 +1,20 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Header,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
   Post,
+  Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
@@ -21,12 +28,15 @@ import {
   CrearCategoriaDto,
 } from '../dto/categoria.dto';
 import {
+  ActualizarCostoDto,
   ActualizarPrecioDto,
   ActualizarProductoDto,
   ActualizarVarianteDto,
   AjustarStockDto,
   CrearProductoDto,
+  CrearTallaDto,
   CrearVarianteDto,
+  QueryInventarioDto,
   RegistrarImagenDto,
 } from '../dto/producto.dto';
 import { PresignedUrlDto } from '../dto/presigned-url.dto';
@@ -43,8 +53,24 @@ export class CatalogoAdminController {
   ) {}
 
   @Get('productos')
-  listarProductos() {
-    return this.productosService.listarAdmin();
+  listarProductos(@Query() query: QueryInventarioDto) {
+    return this.productosService.listarAdmin(query);
+  }
+
+  @Get('inventario/exportar')
+  @Roles('admin', 'bodeguero')
+  @Header(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  @Header('Content-Disposition', 'attachment; filename="inventario-rune.xlsx"')
+  async exportarInventario(
+    @Query() query: QueryInventarioDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const workbook = await this.productosService.exportarExcel(query);
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.send(Buffer.from(buffer));
   }
 
   @Get('productos/:id')
@@ -72,6 +98,20 @@ export class CatalogoAdminController {
     @UsuarioActual() usuario: JwtPayload,
   ) {
     return this.productosService.actualizarPrecio(id, dto, usuario.sub);
+  }
+
+  @Patch('productos/:id/costo')
+  actualizarCosto(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ActualizarCostoDto,
+  ) {
+    return this.productosService.actualizarCosto(id, dto);
+  }
+
+  @Delete('productos/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async eliminarProducto(@Param('id', ParseIntPipe) id: number): Promise<void> {
+    await this.productosService.eliminar(id);
   }
 
   @Get('productos/:id/variantes')
@@ -128,9 +168,23 @@ export class CatalogoAdminController {
     return this.productosService.registrarImagen(id, dto);
   }
 
+  @Delete('productos/:id/imagenes/:imagenId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async eliminarImagen(
+    @Param('id', ParseIntPipe) _id: number,
+    @Param('imagenId', ParseIntPipe) imagenId: number,
+  ): Promise<void> {
+    await this.productosService.eliminarImagen(imagenId);
+  }
+
   @Get('tallas')
   listarTallas() {
     return this.productosService.listarTallas();
+  }
+
+  @Post('tallas')
+  crearTalla(@Body() dto: CrearTallaDto) {
+    return this.productosService.crearTalla(dto);
   }
 
   @Get('variantes')

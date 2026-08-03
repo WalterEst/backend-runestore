@@ -3,8 +3,8 @@ import {
   CreateDateColumn,
   Entity,
   Index,
-  JoinTable,
-  ManyToMany,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
@@ -37,14 +37,35 @@ export class Producto {
   @Column({ type: 'varchar', length: 100, nullable: true })
   anime: string | null;
 
-  /** DECIMAL(10,0) — CLP entero, nunca float. Ver CLAUDE.md */
+  /**
+   * "blanco" = polera base sin estampar, insumo de bodega — nunca se muestra en la tienda
+   * pública. "estampado" = producto terminado/colección que sí se vende. Ver CLAUDE.md.
+   */
+  @Column({
+    name: 'tipo_producto',
+    type: 'enum',
+    enum: ['blanco', 'estampado'],
+    default: 'estampado',
+  })
+  tipoProducto: 'blanco' | 'estampado';
+
+  @Column({ name: 'categoria_id', type: 'int', unsigned: true })
+  categoriaId: number;
+
+  /** Categoría única: tipo de prenda (Poleras/Polerones/Pantalones), mutuamente excluyente */
+  @ManyToOne(() => Categoria)
+  @JoinColumn({ name: 'categoria_id' })
+  categoria: Categoria;
+
+  /** Solo tipo_producto=estampado. DECIMAL(10,0) — CLP entero, nunca float. Ver CLAUDE.md */
   @Column({
     type: 'decimal',
     precision: 10,
     scale: 0,
+    nullable: true,
     transformer: moneyTransformer,
   })
-  precio: number;
+  precio: number | null;
 
   @Column({
     name: 'precio_oferta',
@@ -55,6 +76,16 @@ export class Producto {
     transformer: moneyTransformer,
   })
   precioOferta: number | null;
+
+  /** Solo tipo_producto=blanco: costo de compra del insumo (no se vende, no tiene precio) */
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 0,
+    nullable: true,
+    transformer: moneyTransformer,
+  })
+  costo: number | null;
 
   @Column({
     type: 'tinyint',
@@ -75,13 +106,4 @@ export class Producto {
 
   @UpdateDateColumn({ name: 'actualizado_en', type: 'datetime' })
   actualizadoEn: Date;
-
-  /** Tabla puente producto_categoria (N:M sin columnas propias) */
-  @ManyToMany(() => Categoria)
-  @JoinTable({
-    name: 'producto_categoria',
-    joinColumn: { name: 'producto_id', referencedColumnName: 'id' },
-    inverseJoinColumn: { name: 'categoria_id', referencedColumnName: 'id' },
-  })
-  categorias: Categoria[];
 }

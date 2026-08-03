@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Repository } from 'typeorm';
+import { Workbook } from 'exceljs';
 import { slugify } from '../common/util/slug.util';
 import { Categoria } from '../database/entities/categoria.entity';
 import { HistorialPrecio } from '../database/entities/historial-precio.entity';
@@ -15,13 +16,16 @@ import { ProductoImagen } from '../database/entities/producto-imagen.entity';
 import { ProductoVariante } from '../database/entities/producto-variante.entity';
 import { Talla } from '../database/entities/talla.entity';
 import {
+  ActualizarCostoDto,
   ActualizarPrecioDto,
   ActualizarProductoDto,
   ActualizarVarianteDto,
   AjustarStockDto,
   CrearProductoDto,
+  CrearTallaDto,
   CrearVarianteDto,
   QueryCatalogoDto,
+  QueryInventarioDto,
   RegistrarImagenDto,
 } from './dto/producto.dto';
 
@@ -70,8 +74,10 @@ export class ProductosService {
 
     const qb = this.productos
       .createQueryBuilder('producto')
-      .leftJoinAndSelect('producto.categorias', 'categoria')
-      .where('producto.activo = 1');
+      .leftJoinAndSelect('producto.categoria', 'categoria')
+      // Las poleras "blanco" son insumo interno de bodega: la tienda pública solo vende productos ya estampados
+      .where('producto.activo = 1')
+      .andWhere("producto.tipoProducto = 'estampado'");
 
     if (query.q) {
       qb.andWhere(
@@ -162,7 +168,7 @@ export class ProductosService {
   async detallePublico(slug: string): Promise<Producto> {
     const producto = await this.productos.findOne({
       where: { slug, activo: true },
-      relations: { categorias: true },
+      relations: { categoria: true },
     });
     if (!producto) throw new NotFoundException('Producto no encontrado');
 
@@ -183,13 +189,54 @@ export class ProductosService {
     };
   }
 
-  async listarAdmin(): Promise<(ProductoListado & { stockTotal: number })[]> {
-    const productos = await this.productos.find({
-      relations: { categorias: true },
-      order: { creadoEn: 'DESC' },
-    });
+  /**
+   * Listado de inventario del admin: agrupado por producto (no por variante), con filtros
+   * de tipo (blanco/estampado), categoría, búsqueda de texto (nombre o SKU de alguna
+   * variante) y "solo stock bajo". A diferencia del catálogo público, sí incluye "blanco".
+   */
+  async listarAdmin(
+    query: QueryInventarioDto = {},
+  ): Promise<ResultadoPaginado<ProductoListado & { stockTotal: number }>> {
+    const limite = Math.min(
+      query.limite ?? LIMITE_PAGINA_DEFAULT,
+      LIMITE_PAGINA_MAXIMO,
+    );
+    const pagina = query.pagina ?? 1;
+
+    const qb = this.productos
+      .createQueryBuilder('producto')
+      .leftJoinAndSelect('producto.categoria', 'categoria');
+
+    if (query.tipoProducto) {
+      qb.andWhere('producto.tipoProducto = :tipoProducto', {
+        tipoProducto: query.tipoProducto,
+      });
+    }
+    if (query.categoriaId) {
+      qb.andWhere('producto.categoriaId = :categoriaId', {
+        categoriaId: query.categoriaId,
+      });
+    }
+    if (query.q) {
+      qb.andWhere(
+        '(producto.nombre LIKE :q OR EXISTS (SELECT 1 FROM producto_variantes pv WHERE pv.producto_id = producto.id AND pv.sku LIKE :q))',
+        { q: `%${query.q}%` },
+      );
+    }
+    if (query.stockBajo) {
+      qb.andWhere(
+        'EXISTS (SELECT 1 FROM producto_variantes pv WHERE pv.producto_id = producto.id AND pv.activa = 1 AND pv.stock <= pv.stock_minimo)',
+      );
+    }
+
+    const [productos, total] = await qb
+      .orderBy('producto.creadoEn', 'DESC')
+      .skip((pagina - 1) * limite)
+      .take(limite)
+      .getManyAndCount();
+
     const enriquecidos = await this.enriquecerConImagenYColores(productos);
-    if (productos.length === 0) return [];
+    if (productos.length === 0) return { items: [], total, pagina, limite };
 
     const variantes = await this.variantes.find({
       where: { productoId: In(productos.map((p) => p.id)) },
@@ -202,28 +249,177 @@ export class ProductosService {
       );
     }
 
-    return enriquecidos.map((p) => ({
+    const items = enriquecidos.map((p) => ({
       ...p,
       stockTotal: stockPorProducto.get(p.id) ?? 0,
     }));
+    return { items, total, pagina, limite };
   }
 
-  async obtenerAdmin(id: number): Promise<Producto> {
+  /** Misma lógica de filtros que listarAdmin, sin paginar — usado por la exportación a Excel */
+  private async listarParaExportar(
+    query: Pick<QueryInventarioDto, 'tipoProducto' | 'categoriaId' | 'q' | 'stockBajo'>,
+  ): Promise<Producto[]> {
+    const qb = this.productos
+      .createQueryBuilder('producto')
+      .leftJoinAndSelect('producto.categoria', 'categoria');
+
+    if (query.tipoProducto) {
+      qb.andWhere('producto.tipoProducto = :tipoProducto', {
+        tipoProducto: query.tipoProducto,
+      });
+    }
+    if (query.categoriaId) {
+      qb.andWhere('producto.categoriaId = :categoriaId', {
+        categoriaId: query.categoriaId,
+      });
+    }
+    if (query.q) {
+      qb.andWhere(
+        '(producto.nombre LIKE :q OR EXISTS (SELECT 1 FROM producto_variantes pv WHERE pv.producto_id = producto.id AND pv.sku LIKE :q))',
+        { q: `%${query.q}%` },
+      );
+    }
+    if (query.stockBajo) {
+      qb.andWhere(
+        'EXISTS (SELECT 1 FROM producto_variantes pv WHERE pv.producto_id = producto.id AND pv.activa = 1 AND pv.stock <= pv.stock_minimo)',
+      );
+    }
+
+    return qb.orderBy('producto.nombre', 'ASC').getMany();
+  }
+
+  /** Genera el .xlsx del inventario (una fila por variante) respetando los mismos filtros que el listado */
+  async exportarExcel(
+    query: Pick<QueryInventarioDto, 'tipoProducto' | 'categoriaId' | 'q' | 'stockBajo'>,
+  ): Promise<Workbook> {
+    const productos = await this.listarParaExportar(query);
+    const productoIds = productos.map((p) => p.id);
+    const variantes = productoIds.length
+      ? await this.variantes.find({
+          where: { productoId: In(productoIds) },
+          relations: { talla: true },
+          order: { productoId: 'ASC' },
+        })
+      : [];
+    const variantesPorProducto = new Map<number, ProductoVariante[]>();
+    for (const variante of variantes) {
+      const lista = variantesPorProducto.get(variante.productoId) ?? [];
+      lista.push(variante);
+      variantesPorProducto.set(variante.productoId, lista);
+    }
+
+    const workbook = new Workbook();
+    workbook.creator = 'RUNE — Panel de administración';
+    workbook.created = new Date();
+
+    const hoja = workbook.addWorksheet('Inventario');
+    hoja.columns = [
+      { header: 'Producto', key: 'producto', width: 36 },
+      { header: 'Tipo', key: 'tipo', width: 22 },
+      { header: 'Categoría', key: 'categoria', width: 20 },
+      { header: 'SKU', key: 'sku', width: 22 },
+      { header: 'Talla', key: 'talla', width: 8 },
+      { header: 'Color', key: 'color', width: 14 },
+      { header: 'Stock', key: 'stock', width: 10 },
+      { header: 'Stock mínimo', key: 'stockMinimo', width: 14 },
+      { header: 'Precio', key: 'precio', width: 12 },
+      { header: 'Precio oferta', key: 'precioOferta', width: 14 },
+      { header: 'Costo', key: 'costo', width: 12 },
+      { header: 'Variante activa', key: 'activa', width: 14 },
+      { header: 'Producto activo', key: 'productoActivo', width: 14 },
+    ];
+    hoja.getRow(1).font = { bold: true };
+    hoja.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF0A0A0A' },
+    };
+    hoja.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+
+    const etiquetaTipo: Record<string, string> = {
+      blanco: 'Polera sin estampado',
+      estampado: 'Con estampado / Colección',
+    };
+
+    for (const producto of productos) {
+      const filasProducto = variantesPorProducto.get(producto.id) ?? [];
+      if (filasProducto.length === 0) {
+        hoja.addRow({
+          producto: producto.nombre,
+          tipo: etiquetaTipo[producto.tipoProducto],
+          categoria: producto.categoria.nombre,
+          sku: '—',
+          talla: '—',
+          color: '—',
+          stock: 0,
+          stockMinimo: '—',
+          precio: producto.precio ?? '',
+          precioOferta: producto.precioOferta ?? '',
+          costo: producto.costo ?? '',
+          activa: '—',
+          productoActivo: producto.activo ? 'Sí' : 'No',
+        });
+        continue;
+      }
+      for (const variante of filasProducto) {
+        const fila = hoja.addRow({
+          producto: producto.nombre,
+          tipo: etiquetaTipo[producto.tipoProducto],
+          categoria: producto.categoria.nombre,
+          sku: variante.sku,
+          talla: variante.talla.codigo,
+          color: variante.color ?? '—',
+          stock: variante.stock,
+          stockMinimo: variante.stockMinimo,
+          precio: producto.precio !== null ? producto.precio + variante.precioExtra : '',
+          precioOferta: producto.precioOferta ?? '',
+          costo: producto.costo ?? '',
+          activa: variante.activa ? 'Sí' : 'No',
+          productoActivo: producto.activo ? 'Sí' : 'No',
+        });
+        if (variante.stock <= variante.stockMinimo) {
+          fila.getCell('stock').font = { color: { argb: 'FFE11B22' }, bold: true };
+        }
+      }
+    }
+
+    hoja.autoFilter = { from: 'A1', to: 'M1' };
+    return workbook;
+  }
+
+  async obtenerAdmin(
+    id: number,
+  ): Promise<Producto & { imagenes: ProductoImagen[] }> {
     const producto = await this.productos.findOne({
       where: { id },
-      relations: { categorias: true },
+      relations: { categoria: true },
     });
     if (!producto) throw new NotFoundException('Producto no encontrado');
-    return producto;
+
+    const imagenes = await this.imagenes.find({
+      where: { productoId: id },
+      order: { orden: 'ASC' },
+    });
+    return { ...producto, imagenes };
   }
 
   async crear(dto: CrearProductoDto): Promise<Producto> {
     const slug = await this.generarSlugUnico(dto.nombre);
-    const categorias = await this.categorias.find({
-      where: { id: In(dto.categoriaIds) },
+    const categoria = await this.categorias.findOne({
+      where: { id: dto.categoriaId },
     });
-    if (categorias.length !== dto.categoriaIds.length) {
-      throw new BadRequestException('Alguna categoría no existe');
+    if (!categoria) throw new BadRequestException('La categoría no existe');
+
+    if (dto.tipoProducto === 'estampado' && !dto.precio) {
+      throw new BadRequestException(
+        'Los productos con estampado requieren un precio de venta',
+      );
+    }
+    if (dto.tipoProducto === 'blanco' && !dto.costo) {
+      throw new BadRequestException(
+        'Los insumos (sin estampado) requieren un costo',
+      );
     }
 
     const producto = this.productos.create({
@@ -232,27 +428,32 @@ export class ProductosService {
       descripcion: dto.descripcion,
       descripcionCorta: dto.descripcionCorta ?? null,
       anime: dto.anime ?? null,
-      precio: dto.precio,
+      tipoProducto: dto.tipoProducto,
+      categoriaId: categoria.id,
+      precio: dto.tipoProducto === 'estampado' ? (dto.precio ?? null) : null,
+      costo: dto.tipoProducto === 'blanco' ? (dto.costo ?? null) : null,
       destacado: !!dto.destacado,
       activo: true,
-      categorias,
     });
 
     // El trigger trg_historial_precio_alta ya inserta la primera fila de historial_precios al INSERT
-    return this.productos.save(producto);
+    // (solo si precio no es NULL — los insumos no generan historial de precio)
+    const guardado = await this.productos.save(producto);
+    // save() no trae la relación categoria poblada (solo categoriaId) — el frontend la
+    // necesita para mostrar el nombre de la categoría en la fila recién agregada sin recargar todo.
+    return { ...guardado, categoria };
   }
 
   async actualizar(id: number, dto: ActualizarProductoDto): Promise<Producto> {
     const producto = await this.obtenerAdmin(id);
 
-    if (dto.categoriaIds) {
-      const categorias = await this.categorias.find({
-        where: { id: In(dto.categoriaIds) },
+    if (dto.categoriaId) {
+      const categoria = await this.categorias.findOne({
+        where: { id: dto.categoriaId },
       });
-      if (categorias.length !== dto.categoriaIds.length) {
-        throw new BadRequestException('Alguna categoría no existe');
-      }
-      producto.categorias = categorias;
+      if (!categoria) throw new BadRequestException('La categoría no existe');
+      producto.categoriaId = categoria.id;
+      producto.categoria = categoria;
     }
 
     Object.assign(producto, {
@@ -265,6 +466,41 @@ export class ProductosService {
     });
 
     return this.productos.save(producto);
+  }
+
+  /**
+   * Elimina un producto (insumo o terminado) por completo — a diferencia de "activo",
+   * esto es irreversible. Se bloquea si todavía tiene stock (hay que llevarlo a 0 con una
+   * merma primero) o si la BD rechaza el borrado por FK (movimientos/reservas activas):
+   * en ambos casos es más seguro desactivarlo que perder ese historial.
+   */
+  async eliminar(id: number): Promise<void> {
+    const producto = await this.productos.findOne({ where: { id } });
+    if (!producto) throw new NotFoundException('Producto no encontrado');
+
+    const stockTotal = await this.variantes
+      .createQueryBuilder('v')
+      .select('COALESCE(SUM(v.stock), 0)', 'total')
+      .where('v.productoId = :id', { id })
+      .getRawOne<{ total: string }>();
+    if (Number(stockTotal?.total ?? 0) > 0) {
+      throw new ConflictException(
+        'No se puede eliminar: todavía tiene stock. Ajusta el stock a 0 (merma) antes de eliminarlo.',
+      );
+    }
+
+    try {
+      await this.productos.delete(id);
+    } catch (err) {
+      const codigo = (err as { code?: string; errno?: number }).code;
+      const errno = (err as { code?: string; errno?: number }).errno;
+      if (codigo === 'ER_ROW_IS_REFERENCED_2' || errno === 1451) {
+        throw new ConflictException(
+          'No se puede eliminar: tiene movimientos de stock o pedidos asociados. Desactívalo en su lugar.',
+        );
+      }
+      throw err;
+    }
   }
 
   /**
@@ -315,6 +551,25 @@ export class ProductosService {
   }
 
   /**
+   * Cambio de costo de un insumo (tipoProducto=blanco). A diferencia del precio, no
+   * fiscaliza SERNAC ni tiene historial — es un dato interno de compra a proveedor.
+   */
+  async actualizarCosto(id: number, dto: ActualizarCostoDto): Promise<Producto> {
+    const producto = await this.productos.findOne({ where: { id } });
+    if (!producto) throw new NotFoundException('Producto no encontrado');
+    if (producto.tipoProducto !== 'blanco') {
+      throw new BadRequestException(
+        'Solo los insumos (sin estampado) tienen costo — este producto usa precio',
+      );
+    }
+
+    await this.productos.update({ id }, { costo: dto.costo });
+    const actualizado = await this.productos.findOne({ where: { id } });
+    if (!actualizado) throw new NotFoundException('Producto no encontrado');
+    return actualizado;
+  }
+
+  /**
    * Reposición/ajuste/merma manual desde el panel admin (bodeguero). Todo cambio
    * de stock inserta fila en movimientos_inventario con el stock resultante —
    * sin excepciones (ver CLAUDE.md).
@@ -345,7 +600,7 @@ export class ProductosService {
         { stock: stockResultante },
       );
 
-      const movimiento = await manager.save(
+      const movimientoGuardado = await manager.save(
         manager.create(MovimientoInventario, {
           varianteId,
           tipo: dto.tipo,
@@ -358,9 +613,19 @@ export class ProductosService {
 
       const varianteActualizada = await manager.findOne(ProductoVariante, {
         where: { id: varianteId },
+        relations: { talla: true },
       });
       if (!varianteActualizada)
         throw new NotFoundException('Variante no encontrada');
+
+      // Se recarga con las relaciones producto/talla porque el listado de movimientos
+      // del frontend las muestra directo, sin volver a pedir cada variante por separado.
+      const movimiento = await manager.findOne(MovimientoInventario, {
+        where: { id: movimientoGuardado.id },
+        relations: { variante: { producto: true, talla: true } },
+      });
+      if (!movimiento) throw new NotFoundException('Movimiento no encontrado');
+
       return { variante: varianteActualizada, movimiento };
     });
   }
@@ -387,7 +652,7 @@ export class ProductosService {
     if (skuExistente)
       throw new ConflictException('Ya existe una variante con ese SKU');
 
-    return this.variantes.save(
+    const guardada = await this.variantes.save(
       this.variantes.create({
         productoId,
         tallaId: dto.tallaId,
@@ -399,6 +664,9 @@ export class ProductosService {
         activa: true,
       }),
     );
+    // save() no trae la relación talla poblada (solo tallaId) — el frontend la necesita
+    // para mostrar el código de talla en la fila recién agregada sin recargar todo.
+    return { ...guardada, talla };
   }
 
   async listarTodasLasVariantes(): Promise<ProductoVariante[]> {
@@ -430,6 +698,24 @@ export class ProductosService {
 
   async listarTallas(): Promise<Talla[]> {
     return this.tallas.find({ order: { orden: 'ASC' } });
+  }
+
+  async crearTalla(dto: CrearTallaDto): Promise<Talla> {
+    const codigo = dto.codigo.trim().toUpperCase();
+    const existente = await this.tallas.findOne({ where: { codigo } });
+    if (existente) throw new ConflictException('Ya existe una talla con ese código');
+
+    const ordenMaximo = await this.tallas
+      .createQueryBuilder('talla')
+      .select('MAX(talla.orden)', 'max')
+      .getRawOne<{ max: number | null }>();
+
+    return this.tallas.save(
+      this.tallas.create({
+        codigo,
+        orden: dto.orden ?? (ordenMaximo?.max ?? 0) + 1,
+      }),
+    );
   }
 
   async registrarImagen(
