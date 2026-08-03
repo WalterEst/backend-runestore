@@ -10,6 +10,8 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as argon2 from 'argon2';
+import { authenticator } from 'otplib';
+import * as QRCode from 'qrcode';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { Repository } from 'typeorm';
 import { Consentimiento } from '../database/entities/consentimiento.entity';
@@ -19,12 +21,20 @@ import { TokenUsuario } from '../database/entities/token-usuario.entity';
 import { Usuario } from '../database/entities/usuario.entity';
 import { EmailService } from '../common/email/email.service';
 import { TurnstileService } from '../common/turnstile/turnstile.service';
+import {
+  cifrarTotpSecret,
+  descifrarTotpSecret,
+} from '../common/util/totp-crypto.util';
 import { RegistroDto } from './dto/registro.dto';
 import { LoginDto } from './dto/login.dto';
 import { CambiarPasswordDto } from './dto/cambiar-password.dto';
 import { ConfirmarResetDto, SolicitarResetDto } from './dto/reset-password.dto';
 import { VerificarEmailDto } from './dto/verificar-email.dto';
-import { JwtPayload, JwtRefreshPayload } from './types';
+import { DesactivarTotpDto } from './dto/totp.dto';
+import { JwtDosFaPendientePayload, JwtPayload, JwtRefreshPayload } from './types';
+
+const NOMBRE_EMISOR_TOTP = 'RUNE';
+const EXPIRACION_DESAFIO_2FA = '5m';
 
 const MENSAJE_CREDENCIALES_INVALIDAS = 'Credenciales inválidas';
 const MAX_INTENTOS_LOGIN = 5;
@@ -39,6 +49,13 @@ interface TokensEmitidos {
   accessToken: string;
   refreshToken: string;
 }
+
+export type SesionEmitida = TokensEmitidos & {
+  usuario: { id: number; nombre: string; rol: string };
+};
+
+/** El login puede terminar en una sesión completa, o pedir el segundo paso (2FA) primero */
+type ResultadoLogin = SesionEmitida | { requiere2fa: true; tokenTemporal: string };
 
 @Injectable()
 export class AuthService {
@@ -113,12 +130,7 @@ export class AuthService {
     };
   }
 
-  async login(
-    dto: LoginDto,
-    ctx: DatosContexto,
-  ): Promise<
-    TokensEmitidos & { usuario: { id: number; nombre: string; rol: string } }
-  > {
+  async login(dto: LoginDto, ctx: DatosContexto): Promise<ResultadoLogin> {
     const usuario = await this.usuarios.findOne({
       where: { email: dto.email },
       relations: { rol: true },
@@ -153,7 +165,65 @@ export class AuthService {
 
     usuario.intentosLogin = 0;
     usuario.bloqueadoHasta = null;
+    await this.usuarios.save(usuario);
 
+    if (usuario.totpHabilitado) {
+      this.logger.log(
+        `Contraseña OK, esperando 2FA: usuario_id=${usuario.id} ip=${ctx.ip ?? '-'}`,
+      );
+      const tokenTemporal = await this.jwtService.signAsync(
+        { sub: usuario.id, tipo: '2fa_pendiente' } satisfies JwtDosFaPendientePayload,
+        {
+          secret: this.config.get<string>('jwt.secret'),
+          expiresIn: EXPIRACION_DESAFIO_2FA,
+        },
+      );
+      return { requiere2fa: true, tokenTemporal };
+    }
+
+    return this.emitirSesion(usuario, ctx);
+  }
+
+  /** Segundo paso del login cuando el usuario tiene 2FA activado (ver login()) */
+  async verificarLoginTotp(
+    tokenTemporal: string,
+    codigo: string,
+    ctx: DatosContexto,
+  ): Promise<SesionEmitida> {
+    let payload: JwtDosFaPendientePayload;
+    try {
+      payload = await this.jwtService.verifyAsync<JwtDosFaPendientePayload>(
+        tokenTemporal,
+        { secret: this.config.get<string>('jwt.secret') },
+      );
+    } catch {
+      throw new UnauthorizedException('Sesión de verificación inválida o expirada');
+    }
+    if (payload.tipo !== '2fa_pendiente') {
+      throw new UnauthorizedException('Sesión de verificación inválida');
+    }
+
+    const usuario = await this.usuarios.findOne({
+      where: { id: payload.sub },
+      relations: { rol: true },
+    });
+    if (!usuario || !usuario.activo || !usuario.totpHabilitado || !usuario.totpSecret) {
+      throw new UnauthorizedException('Sesión de verificación inválida');
+    }
+
+    const secretoPlano = descifrarTotpSecret(usuario.totpSecret);
+    if (!authenticator.check(codigo, secretoPlano)) {
+      throw new UnauthorizedException('Código incorrecto');
+    }
+
+    return this.emitirSesion(usuario, ctx);
+  }
+
+  /** Últimos pasos comunes de un login válido (con o sin 2FA): emitir tokens y guardar sesión */
+  private async emitirSesion(
+    usuario: Usuario,
+    ctx: DatosContexto,
+  ): Promise<SesionEmitida> {
     const tokens = await this.emitirTokens(usuario);
     usuario.refreshTokenHash = this.hashToken(tokens.refreshToken);
     await this.usuarios.save(usuario);
@@ -162,14 +232,83 @@ export class AuthService {
       `Login exitoso: usuario_id=${usuario.id} ip=${ctx.ip ?? '-'}`,
     );
 
+    const rolNombre =
+      usuario.rol?.nombre ?? (await this.obtenerNombreRol(usuario.rolId));
     return {
       ...tokens,
       usuario: {
         id: usuario.id,
         nombre: usuario.nombre,
-        rol: usuario.rol.nombre,
+        rol: rolNombre,
       },
     };
+  }
+
+  /** Genera un secreto TOTP nuevo (pendiente de confirmar) + su QR — no activa el 2FA todavía */
+  async generarTotp(usuarioId: number): Promise<{ secret: string; qrDataUrl: string }> {
+    const usuario = await this.usuarios.findOne({ where: { id: usuarioId } });
+    if (!usuario) throw new NotFoundException('Usuario no encontrado');
+    if (usuario.totpHabilitado) {
+      throw new BadRequestException(
+        'La verificación en dos pasos ya está activada. Desactívala antes de generar un código nuevo.',
+      );
+    }
+
+    const secret = authenticator.generateSecret();
+    usuario.totpSecret = cifrarTotpSecret(secret);
+    await this.usuarios.save(usuario);
+
+    const otpauth = authenticator.keyuri(usuario.email, NOMBRE_EMISOR_TOTP, secret);
+    const qrDataUrl = await QRCode.toDataURL(otpauth);
+    return { secret, qrDataUrl };
+  }
+
+  /** Confirma el código generado desde una app como Google Authenticator y activa el 2FA */
+  async confirmarTotp(
+    usuarioId: number,
+    codigo: string,
+  ): Promise<{ mensaje: string }> {
+    const usuario = await this.usuarios.findOne({ where: { id: usuarioId } });
+    if (!usuario) throw new NotFoundException('Usuario no encontrado');
+    if (!usuario.totpSecret) {
+      throw new BadRequestException(
+        'Primero genera el código QR desde "Activar verificación en dos pasos"',
+      );
+    }
+    if (usuario.totpHabilitado) {
+      throw new BadRequestException('La verificación en dos pasos ya está activada');
+    }
+
+    const secretoPlano = descifrarTotpSecret(usuario.totpSecret);
+    if (!authenticator.check(codigo, secretoPlano)) {
+      throw new UnauthorizedException('Código incorrecto');
+    }
+
+    usuario.totpHabilitado = true;
+    await this.usuarios.save(usuario);
+    return { mensaje: 'Verificación en dos pasos activada' };
+  }
+
+  /** Exige la contraseña actual para desactivar el 2FA — evita que una sesión robada lo desactive sola */
+  async desactivarTotp(
+    usuarioId: number,
+    dto: DesactivarTotpDto,
+  ): Promise<{ mensaje: string }> {
+    const usuario = await this.usuarios.findOne({ where: { id: usuarioId } });
+    if (!usuario) throw new NotFoundException('Usuario no encontrado');
+
+    const passwordValida = await argon2.verify(
+      usuario.passwordHash,
+      dto.password,
+    );
+    if (!passwordValida) {
+      throw new BadRequestException('La contraseña es incorrecta');
+    }
+
+    usuario.totpSecret = null;
+    usuario.totpHabilitado = false;
+    await this.usuarios.save(usuario);
+    return { mensaje: 'Verificación en dos pasos desactivada' };
   }
 
   async refrescar(refreshToken: string | undefined): Promise<TokensEmitidos> {

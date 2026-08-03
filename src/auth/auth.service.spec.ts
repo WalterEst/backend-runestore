@@ -8,7 +8,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
-import { AuthService } from './auth.service';
+import { AuthService, SesionEmitida } from './auth.service';
 import { Usuario } from '../database/entities/usuario.entity';
 import { Rol } from '../database/entities/rol.entity';
 import { TokenUsuario } from '../database/entities/token-usuario.entity';
@@ -159,10 +159,10 @@ describe('AuthService', () => {
       };
       usuariosRepo.findOne.mockResolvedValueOnce(usuarioGuardado);
 
-      const resultado = await service.login(
+      const resultado = (await service.login(
         { email: 'cliente@rune.cl', password: 'claveSegura1' },
         { ip: '1.1.1.1' },
-      );
+      )) as SesionEmitida;
 
       expect(resultado.accessToken).toBeDefined();
       expect(resultado.refreshToken).toBeDefined();
@@ -248,10 +248,10 @@ describe('AuthService', () => {
         rol: { id: 2, nombre: 'cliente' },
       };
       usuariosRepo.findOne.mockResolvedValueOnce(usuario);
-      const { refreshToken } = await service.login(
+      const { refreshToken } = (await service.login(
         { email: usuario.email, password: 'claveSegura1' },
         {},
-      );
+      )) as SesionEmitida;
 
       const usuarioConHash = {
         ...usuario,
@@ -279,10 +279,10 @@ describe('AuthService', () => {
         rol: { id: 2, nombre: 'cliente' },
       };
       usuariosRepo.findOne.mockResolvedValueOnce(usuario);
-      const { refreshToken: tokenViejo } = await service.login(
+      const { refreshToken: tokenViejo } = (await service.login(
         { email: usuario.email, password: 'claveSegura1' },
         {},
-      );
+      )) as SesionEmitida;
 
       // El usuario ya rotó su token (hash en BD distinto al que presenta ahora)
       usuariosRepo.findOne.mockResolvedValueOnce({

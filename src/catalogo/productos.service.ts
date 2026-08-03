@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -404,7 +405,13 @@ export class ProductosService {
     return { ...producto, imagenes };
   }
 
-  async crear(dto: CrearProductoDto): Promise<Producto> {
+  async crear(dto: CrearProductoDto, rol: string): Promise<Producto> {
+    if (rol === 'bodeguero' && dto.tipoProducto !== 'blanco') {
+      throw new ForbiddenException(
+        'Bodeguero solo puede crear insumos (sin estampado)',
+      );
+    }
+
     const slug = await this.generarSlugUnico(dto.nombre);
     const categoria = await this.categorias.findOne({
       where: { id: dto.categoriaId },
@@ -444,8 +451,17 @@ export class ProductosService {
     return { ...guardado, categoria };
   }
 
-  async actualizar(id: number, dto: ActualizarProductoDto): Promise<Producto> {
+  async actualizar(
+    id: number,
+    dto: ActualizarProductoDto,
+    rol: string,
+  ): Promise<Producto> {
     const producto = await this.obtenerAdmin(id);
+    if (rol === 'bodeguero' && producto.tipoProducto !== 'blanco') {
+      throw new ForbiddenException(
+        'Bodeguero solo puede editar insumos (sin estampado)',
+      );
+    }
 
     if (dto.categoriaId) {
       const categoria = await this.categorias.findOne({
@@ -474,9 +490,14 @@ export class ProductosService {
    * merma primero) o si la BD rechaza el borrado por FK (movimientos/reservas activas):
    * en ambos casos es más seguro desactivarlo que perder ese historial.
    */
-  async eliminar(id: number): Promise<void> {
+  async eliminar(id: number, rol: string): Promise<void> {
     const producto = await this.productos.findOne({ where: { id } });
     if (!producto) throw new NotFoundException('Producto no encontrado');
+    if (rol === 'bodeguero' && producto.tipoProducto !== 'blanco') {
+      throw new ForbiddenException(
+        'Bodeguero solo puede eliminar insumos (sin estampado)',
+      );
+    }
 
     const stockTotal = await this.variantes
       .createQueryBuilder('v')

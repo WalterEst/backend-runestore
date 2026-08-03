@@ -88,6 +88,18 @@ export class Usuario {
   })
   refreshTokenHash: string | null;
 
+  /** Secreto TOTP cifrado (AES-256-GCM, ver totp-crypto.util.ts) — nunca en texto plano */
+  @Column({ name: 'totp_secret', type: 'varchar', length: 255, nullable: true })
+  totpSecret: string | null;
+
+  @Column({
+    name: 'totp_habilitado',
+    type: 'tinyint',
+    default: 0,
+    transformer: { to: (v: boolean) => (v ? 1 : 0), from: (v: number) => !!v },
+  })
+  totpHabilitado: boolean;
+
   @CreateDateColumn({ name: 'creado_en', type: 'datetime' })
   creadoEn: Date;
 

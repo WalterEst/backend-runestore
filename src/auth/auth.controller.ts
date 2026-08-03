@@ -18,6 +18,11 @@ import { LoginDto } from './dto/login.dto';
 import { CambiarPasswordDto } from './dto/cambiar-password.dto';
 import { ConfirmarResetDto, SolicitarResetDto } from './dto/reset-password.dto';
 import { VerificarEmailDto } from './dto/verificar-email.dto';
+import {
+  ConfirmarTotpDto,
+  DesactivarTotpDto,
+  VerificarLoginTotpDto,
+} from './dto/totp.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { UsuarioActual } from './decorators/usuario-actual.decorator';
 import type { JwtPayload } from './types';
@@ -48,13 +53,33 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, usuario } = await this.authService.login(
-      dto,
-      {
+    const resultado = await this.authService.login(dto, {
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+    // Con 2FA activado no hay sesión todavía: no se setea cookie hasta el segundo paso
+    if ('requiere2fa' in resultado) {
+      return resultado;
+    }
+    const { accessToken, refreshToken, usuario } = resultado;
+    this.setRefreshCookie(res, refreshToken);
+    return { accessToken, usuario };
+  }
+
+  /** Segundo paso del login cuando la cuenta tiene 2FA activado */
+  @Post('2fa/verificar-login')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async verificarLoginTotp(
+    @Body() dto: VerificarLoginTotpDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, refreshToken, usuario } =
+      await this.authService.verificarLoginTotp(dto.tokenTemporal, dto.codigo, {
         ip: req.ip,
         userAgent: req.headers['user-agent'],
-      },
-    );
+      });
     this.setRefreshCookie(res, refreshToken);
     return { accessToken, usuario };
   }
@@ -120,6 +145,34 @@ export class AuthController {
     @Body() dto: CambiarPasswordDto,
   ) {
     return this.authService.cambiarPassword(usuario.sub, dto);
+  }
+
+  /** Genera un secreto + QR nuevo (pendiente de confirmar con /2fa/confirmar) */
+  @Post('2fa/generar')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  generarTotp(@UsuarioActual() usuario: JwtPayload) {
+    return this.authService.generarTotp(usuario.sub);
+  }
+
+  @Post('2fa/confirmar')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  confirmarTotp(
+    @UsuarioActual() usuario: JwtPayload,
+    @Body() dto: ConfirmarTotpDto,
+  ) {
+    return this.authService.confirmarTotp(usuario.sub, dto.codigo);
+  }
+
+  @Post('2fa/desactivar')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  desactivarTotp(
+    @UsuarioActual() usuario: JwtPayload,
+    @Body() dto: DesactivarTotpDto,
+  ) {
+    return this.authService.desactivarTotp(usuario.sub, dto);
   }
 
   private setRefreshCookie(res: Response, refreshToken: string): void {

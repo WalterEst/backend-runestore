@@ -3,6 +3,7 @@ import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { ProductosService } from './productos.service';
@@ -78,13 +79,16 @@ describe('ProductosService', () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
       categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
 
-      await service.crear({
-        nombre: 'Polera Naruto',
-        descripcion: 'Estampado DTF',
-        tipoProducto: 'estampado',
-        precio: 19990,
-        categoriaId: 1,
-      });
+      await service.crear(
+        {
+          nombre: 'Polera Naruto',
+          descripcion: 'Estampado DTF',
+          tipoProducto: 'estampado',
+          precio: 19990,
+          categoriaId: 1,
+        },
+        'admin',
+      );
 
       expect(productosRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'polera-naruto' }),
@@ -97,13 +101,16 @@ describe('ProductosService', () => {
         .mockResolvedValueOnce(null); // "polera-naruto-2" libre
       categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
 
-      await service.crear({
-        nombre: 'Polera Naruto',
-        descripcion: 'x',
-        tipoProducto: 'estampado',
-        precio: 1000,
-        categoriaId: 1,
-      });
+      await service.crear(
+        {
+          nombre: 'Polera Naruto',
+          descripcion: 'x',
+          tipoProducto: 'estampado',
+          precio: 1000,
+          categoriaId: 1,
+        },
+        'admin',
+      );
 
       expect(productosRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ slug: 'polera-naruto-2' }),
@@ -114,13 +121,16 @@ describe('ProductosService', () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
       categoriasRepo.findOne.mockResolvedValueOnce(null);
       await expect(
-        service.crear({
-          nombre: 'x',
-          descripcion: 'x',
-          tipoProducto: 'estampado',
-          precio: 1000,
-          categoriaId: 99,
-        }),
+        service.crear(
+          {
+            nombre: 'x',
+            descripcion: 'x',
+            tipoProducto: 'estampado',
+            precio: 1000,
+            categoriaId: 99,
+          },
+          'admin',
+        ),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -128,12 +138,15 @@ describe('ProductosService', () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
       categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
       await expect(
-        service.crear({
-          nombre: 'x',
-          descripcion: 'x',
-          tipoProducto: 'estampado',
-          categoriaId: 1,
-        } as any),
+        service.crear(
+          {
+            nombre: 'x',
+            descripcion: 'x',
+            tipoProducto: 'estampado',
+            categoriaId: 1,
+          } as any,
+          'admin',
+        ),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -141,13 +154,92 @@ describe('ProductosService', () => {
       productosRepo.findOne.mockResolvedValueOnce(null);
       categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
       await expect(
-        service.crear({
-          nombre: 'x',
+        service.crear(
+          {
+            nombre: 'x',
+            descripcion: 'x',
+            tipoProducto: 'blanco',
+            categoriaId: 1,
+          } as any,
+          'admin',
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza que bodeguero cree un producto estampado', async () => {
+      await expect(
+        service.crear(
+          {
+            nombre: 'x',
+            descripcion: 'x',
+            tipoProducto: 'estampado',
+            precio: 1000,
+            categoriaId: 1,
+          },
+          'bodeguero',
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(productosRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('permite que bodeguero cree un insumo (blanco)', async () => {
+      productosRepo.findOne.mockResolvedValueOnce(null);
+      categoriasRepo.findOne.mockResolvedValueOnce({ id: 1 });
+
+      await service.crear(
+        {
+          nombre: 'Polera en blanco',
           descripcion: 'x',
           tipoProducto: 'blanco',
+          costo: 5000,
           categoriaId: 1,
-        } as any),
-      ).rejects.toThrow(BadRequestException);
+        },
+        'bodeguero',
+      );
+
+      expect(productosRepo.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('actualizar', () => {
+    it('rechaza que bodeguero edite un producto estampado', async () => {
+      productosRepo.findOne.mockResolvedValueOnce({
+        id: 1,
+        tipoProducto: 'estampado',
+      });
+
+      await expect(
+        service.actualizar(1, { nombre: 'Nuevo nombre' }, 'bodeguero'),
+      ).rejects.toThrow(ForbiddenException);
+      expect(productosRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('permite que bodeguero edite un insumo (blanco)', async () => {
+      productosRepo.findOne.mockResolvedValueOnce({
+        id: 1,
+        tipoProducto: 'blanco',
+        nombre: 'viejo',
+      });
+
+      await service.actualizar(1, { nombre: 'nuevo' }, 'bodeguero');
+
+      expect(productosRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ nombre: 'nuevo' }),
+      );
+    });
+  });
+
+  describe('eliminar', () => {
+    it('rechaza que bodeguero elimine un producto estampado', async () => {
+      productosRepo.findOne.mockResolvedValueOnce({
+        id: 1,
+        tipoProducto: 'estampado',
+      });
+
+      await expect(service.eliminar(1, 'bodeguero')).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(productosRepo.delete).not.toHaveBeenCalled();
     });
   });
 

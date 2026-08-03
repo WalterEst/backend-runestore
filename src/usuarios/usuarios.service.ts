@@ -145,11 +145,12 @@ export class UsuariosService {
 
   private sinCamposSensibles(
     usuario: Usuario,
-  ): Omit<Usuario, 'passwordHash' | 'refreshTokenHash'> {
+  ): Omit<Usuario, 'passwordHash' | 'refreshTokenHash' | 'totpSecret'> {
     const copia: Partial<Usuario> = { ...usuario };
     delete copia.passwordHash;
     delete copia.refreshTokenHash;
-    return copia as Omit<Usuario, 'passwordHash' | 'refreshTokenHash'>;
+    delete copia.totpSecret;
+    return copia as Omit<Usuario, 'passwordHash' | 'refreshTokenHash' | 'totpSecret'>;
   }
 
   /**
@@ -178,6 +179,8 @@ export class UsuariosService {
           telefono: null,
           passwordHash: 'SUPRIMIDO',
           refreshTokenHash: null,
+          totpSecret: null,
+          totpHabilitado: false,
           activo: false,
           eliminadoEn: new Date(),
         },
@@ -207,7 +210,7 @@ export class UsuariosService {
   // --- Administración (Parte 5.1 del documento maestro) ---
 
   async listarAdmin(): Promise<
-    Omit<Usuario, 'passwordHash' | 'refreshTokenHash'>[]
+    Omit<Usuario, 'passwordHash' | 'refreshTokenHash' | 'totpSecret'>[]
   > {
     const usuarios = await this.usuarios.find({
       relations: { rol: true },
@@ -221,7 +224,7 @@ export class UsuariosService {
     nombreRol: string,
     actorId: number,
     ip?: string,
-  ): Promise<Omit<Usuario, 'passwordHash' | 'refreshTokenHash'>> {
+  ): Promise<Omit<Usuario, 'passwordHash' | 'refreshTokenHash' | 'totpSecret'>> {
     const rol = await this.roles.findOne({ where: { nombre: nombreRol } });
     if (!rol) throw new BadRequestException(`Rol "${nombreRol}" no existe`);
 
@@ -249,7 +252,7 @@ export class UsuariosService {
     usuarioId: number,
     actorId: number,
     ip?: string,
-  ): Promise<Omit<Usuario, 'passwordHash' | 'refreshTokenHash'>> {
+  ): Promise<Omit<Usuario, 'passwordHash' | 'refreshTokenHash' | 'totpSecret'>> {
     const usuario = await this.usuarios.findOne({ where: { id: usuarioId } });
     if (!usuario) throw new NotFoundException('Usuario no encontrado');
 

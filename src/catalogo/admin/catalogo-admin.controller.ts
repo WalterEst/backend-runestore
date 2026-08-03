@@ -80,17 +80,24 @@ export class CatalogoAdminController {
     return this.productosService.obtenerAdmin(id);
   }
 
+  /** Bodeguero puede crear/editar/eliminar insumos (tipoProducto=blanco) — el servicio bloquea con 403 si intenta tocar un producto estampado. Ver Parte 5.1 del documento maestro. */
   @Post('productos')
-  crearProducto(@Body() dto: CrearProductoDto) {
-    return this.productosService.crear(dto);
+  @Roles('admin', 'bodeguero')
+  crearProducto(
+    @Body() dto: CrearProductoDto,
+    @UsuarioActual() usuario: JwtPayload,
+  ) {
+    return this.productosService.crear(dto, usuario.rol);
   }
 
   @Patch('productos/:id')
+  @Roles('admin', 'bodeguero')
   actualizarProducto(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ActualizarProductoDto,
+    @UsuarioActual() usuario: JwtPayload,
   ) {
-    return this.productosService.actualizar(id, dto);
+    return this.productosService.actualizar(id, dto, usuario.rol);
   }
 
   @Patch('productos/:id/precio')
@@ -102,7 +109,9 @@ export class CatalogoAdminController {
     return this.productosService.actualizarPrecio(id, dto, usuario.sub);
   }
 
+  /** El servicio ya restringe esto a tipoProducto=blanco sin importar el rol, así que es seguro abrirlo a bodeguero */
   @Patch('productos/:id/costo')
+  @Roles('admin', 'bodeguero')
   actualizarCosto(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ActualizarCostoDto,
@@ -111,9 +120,13 @@ export class CatalogoAdminController {
   }
 
   @Delete('productos/:id')
+  @Roles('admin', 'bodeguero')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async eliminarProducto(@Param('id', ParseIntPipe) id: number): Promise<void> {
-    await this.productosService.eliminar(id);
+  async eliminarProducto(
+    @Param('id', ParseIntPipe) id: number,
+    @UsuarioActual() usuario: JwtPayload,
+  ): Promise<void> {
+    await this.productosService.eliminar(id, usuario.rol);
   }
 
   @Get('productos/:id/variantes')
