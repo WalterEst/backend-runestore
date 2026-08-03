@@ -1,4 +1,4 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, HttpAdapterHost } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
@@ -6,8 +6,16 @@ import cookieParser from 'cookie-parser';
 import { Logger } from 'nestjs-pino';
 import { json } from 'express';
 import { AppModule } from './app.module';
+import { inicializarSentry } from './common/sentry/sentry.util';
+import { SentryExceptionFilter } from './common/sentry/sentry-exception.filter';
 
 async function bootstrap() {
+  // Antes de crear la app: si algo revienta durante el bootstrap también queda capturado.
+  inicializarSentry(
+    process.env.SENTRY_DSN,
+    process.env.NODE_ENV ?? 'development',
+  );
+
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));
 
@@ -16,6 +24,12 @@ async function bootstrap() {
   app.use(helmet());
   app.use(cookieParser());
   app.use(json({ limit: '1mb' }));
+
+  // Reporta a Sentry los errores 5xx (con scrubbing de headers/cookies/passwords en
+  // inicializarSentry) sin cambiar ninguna respuesta — sigue delegando en el manejo de
+  // Nest de siempre. Sin SENTRY_DSN, Sentry.captureException() es un no-op inofensivo.
+  const { httpAdapter } = app.get(HttpAdapterHost);
+  app.useGlobalFilters(new SentryExceptionFilter(httpAdapter));
 
   app.enableCors({
     origin: config.get<string>('frontendOrigin'),

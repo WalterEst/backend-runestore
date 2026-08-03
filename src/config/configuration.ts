@@ -54,4 +54,9 @@ export default () => ({
     rutEmisor: process.env.DTE_RUT_EMISOR,
     razonSocialEmisor: process.env.DTE_RAZON_SOCIAL_EMISOR,
   },
+
+  /** Sin DSN, Sentry.init() nunca se llama (ver main.ts) — no rompe el desarrollo local */
+  sentry: {
+    dsn: process.env.SENTRY_DSN,
+  },
 });
